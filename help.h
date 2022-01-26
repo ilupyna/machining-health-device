@@ -57,6 +57,14 @@ void TimerInterruptDisable() {
 
 
 
+double accelToG_double(const int16_t a, const uint8_t accelRange = 0) {
+  const double ACCEL_TO_G_DIVIDER = accelRange == 0 ? 16384.0 :
+                                      accelRange == 1 ? 8192.0 :
+                                      accelRange == 2 ? 4096.0 : 2048.0;
+  return double(a)/ACCEL_TO_G_DIVIDER;
+}
+
+
 const String preparedHtmlPage = 
   "<!DOCTYPE html>"\
     "<html>"\
