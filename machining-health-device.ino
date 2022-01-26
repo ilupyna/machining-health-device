@@ -34,14 +34,15 @@ dataObj database[DATA_SIZE_MAX];
 
 //#define RESPONSE_SIZE 1024
 //#define MAX_SINGLE_RESPONSE_SIZE 1006 //1024-18
-//String MeasurementsForResponse;
-//MeasurementsForResponse.reserve(MAX_SINGLE_RESPONSE_SIZE);
+String MeasurementsForResponse;
 
 
 //File currentFile;
 
 unsigned long Start, Finish, WorkTime = 0;
+unsigned long MeanResponseTime = 1, MeanMeasureTime = 1;
 size_t iterations = 0;
+uint8_t measurement_pos = 0;
 
 
 const String preparedHtmlPage = 
@@ -105,9 +106,12 @@ const String preparedHtmlPage =
 
 
 void SensorMeasurements() {
+  const auto mesStart = micros();
   accelgyro.getAcceleration(&ax, &ay, &az);
-//  database[iteration] = {ax, ay, az};
+  database[measurement_pos++] = {ax, ay, az};
 //  MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az) +';';
+//  const auto mesTime = micros() - mesStart;
+//  MeanMeasureTime = (MeanMeasureTime + mesTime)/2;
   
 //  currentFile.println(time(nullptr));
 //  currentFile.print(ax); currentFile.print(',');
@@ -115,6 +119,14 @@ void SensorMeasurements() {
 //  currentFile.print(az); currentFile.println(';');
   
   ++iterations;
+  if(measurement_pos > DATA_SIZE_MAX) {
+//  if(MeasurementsForResponse.size() > 1024) {
+    SensorLive = false;
+    Finish = micros();
+    WorkTime = Finish - Start;
+    ax = ay = az = 0;
+    Serial.println(F("Stop measure"));
+  }
 }
 
 
@@ -142,6 +154,10 @@ void ParseConsole() {
       Serial.print(F("V = "));
       Serial.print(1000.0*iterations/WorkTime);
       Serial.println(F("kHz;"));
+      
+      Serial.print(F("ResponseTime: "));
+      Serial.print(MeanResponseTime);
+      Serial.println(F("ms;"));
 
       /*
       FSInfo filesystem_info;
@@ -155,6 +171,7 @@ void ParseConsole() {
       Finish = 0;
       WorkTime = 0;
       iterations = 0;
+      MeanResponseTime = 1;
       Serial.println(F("Cleared"));
     }
     Serial.flush();
@@ -341,19 +358,25 @@ void setup() {
     
     server.send(204);
   });
-  
+
+  MeasurementsForResponse.reserve(1024);
   server.on("/msrmnt", HTTP_GET, [](){
+    auto start_sending_time = micros();
 //    Serial.println(server.readStringUntil("\n\r"));
-//      Serial.println(F("GET measurement"));
-//      server.sendHeader(F("Content-Type"), F("text/plain"));
-//      server.sendHeader(F("Connection"), F("Close"));
-//      server.sendHeader("Connection", "Keep-Alive");
-    const String payload = String(ax) +',' + String(ay) +','+ String(az);
-    server.send(200, "text/xml", payload);  // arraybuffer/blob text/plain
-//    server.sendContent(payload);
-    Serial.println(payload+';');
+    MeasurementsForResponse = "";
+    for (uint8_t i=0; i<measurement_pos; i++) {
+      MeasurementsForResponse += String(database[i].ax) +',' + String(database[i].ay) +','+ String(database[i].az) +';';
+    }
+    measurement_pos = 0;
+    
+    server.send(200, "text/plain", MeasurementsForResponse);  // arraybuffer/blob text/plain
+    auto ResponseTime = (micros()-start_sending_time)/1000.0;
+    Serial.print(F("GET measurement: "));
+    Serial.println(ResponseTime);
+    MeanResponseTime = (MeanResponseTime+ResponseTime)/2.0;
   });
   server.enableCORS(true);
+  
   
   // Start the server
   server.begin();
