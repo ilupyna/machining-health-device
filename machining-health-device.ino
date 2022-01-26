@@ -52,7 +52,7 @@ void ParseConsole() {
   if (Serial.available() > 0) {
     const String last_console_text = Serial.readStringUntil('\n');
     
-  if (last_console_text == "stats") {
+    if (last_console_text == "stats") {
       const unsigned long MeasureTime = Finish - Start;
       Serial.print(F("WorkTime: "));
       Serial.print((MeasureTime)/1000.0);
@@ -70,9 +70,6 @@ void ParseConsole() {
       Serial.print(F("SaveTime: "));
       Serial.print(savetime/1000.0);
       Serial.println(F("ms;"));
-      
-//      Serial.print(F("Size of time_t : "));
-//      Serial.println(sizeof(time_t));
       //8
     }
     else if (last_console_text == "msrmnt") {
@@ -107,50 +104,9 @@ void setup() {
   accelgyro.initialize();
   Serial.println(accelgyro.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
   
-//  Serial.print(F("DLPFMode:"));
-//  Serial.println(accelgyro.getDLPFMode());
-  //0
-//  accelgyro.setDLPFMode(1);
-
-//  Serial.print(F("DHPFMode: "));
-//  Serial.println(accelgyro.getDHPFMode());
-  //0
-
-//  Serial.print(F("ScaleAccel: "));
-//  Serial.println(accelgyro.getFullScaleAccelRange());
-  //0
-  
   Serial.println(F("\nTest: "));
 //  accelgyro.CalibrateAccel(1);
   accelgyro.PrintActiveOffsets();
-  
-
-//  Serial.println(F("\nTest2: "));
-//  Serial.print(F("MotionDetectionThreshold: "));
-//  Serial.println(accelgyro.getMotionDetectionThreshold());
-  //0
-//  Serial.print(F("MotionDetectionDuration: "));
-//  Serial.println(accelgyro.getMotionDetectionDuration());
-  //0
-//  Serial.print(F("SleepEnabled: "));
-//  Serial.println(accelgyro.getSleepEnabled());  
-  //0
-//  Serial.print(F("WakeCycleEnabled: "));
-//  Serial.println(accelgyro.getWakeCycleEnabled());  
-  //0
-//  Serial.print(F("TempSensorEnabled: "));
-//  Serial.println(accelgyro.getTempSensorEnabled());
-  //1
-//  Serial.print(F("ClockSource: "));
-//  Serial.println(accelgyro.getClockSource());
-  //1
-//  Serial.print(F("WakeFrequency: "));
-//  Serial.println(accelgyro.getWakeFrequency());
-  
-//  Serial.println(F("\nTest3: "));
-//  Serial.print(F("DeviceID: "));
-//  Serial.println(accelgyro.getDeviceID(), HEX);
-  //0x34
   
   
   Serial.print(F("Trying to filesystem: "));
@@ -179,27 +135,39 @@ void loop() {
   ParseConsole();
   if (SensorLive) {
     SensorMeasurements();
-//    if(iterations==MAX_DATA_SIZE) {
-//  //    SensorLive = false;
-//      Finish = micros();
-//      
-//      s2 = micros();
-//      FSInfo filesystem_info;
-//      LittleFS.info(filesystem_info);
-//      if(filesystem_info.usedBytes < filesystem_info.totalBytes/3) {
-//        File currentFile = LittleFS.open(F("/SensorData.txt"), "a");
-//        for (int i = 0; i<iterations; i++) {
+    
+    if(iterations==MAX_DATA_SIZE) {
+      Finish = micros();
+      
+      s2 = micros();
+      
+      FSInfo filesystem_info;
+      LittleFS.info(filesystem_info);
+      if(filesystem_info.usedBytes < filesystem_info.totalBytes/3) {
+        File currentFile = LittleFS.open(F("/SensorData.txt"), "a");
+        for (int i = 0; i<iterations; i++) {
+//          char timeBufText[24]; //18
+//          strftime(timeBufText, sizeof(timeBufText), "%T %D", localtime(&dataStorage[i].timeStomp));  //gmtime
+//          
+//          currentFile.println(timeBufText);
+
 //          currentFile.println(ctime(&dataStorage[i].timeStomp));
-//          currentFile.print(dataStorage[i].ax); currentFile.print(',');
-//          currentFile.print(dataStorage[i].ay); currentFile.print(',');
-//          currentFile.print(dataStorage[i].az); currentFile.println(';');
-//        }
-//        currentFile.close();
-//  //      Serial.println(F("keks"));
-//      }
-//      f2 = micros();
-//      savetime += f2-s2;
-//      iterations = 0;
-//    }
+          
+          currentFile.println(dataStorage[i].timeStomp);
+          currentFile.print(dataStorage[i].ax); currentFile.print(',');
+          currentFile.print(dataStorage[i].ay); currentFile.print(',');
+          currentFile.print(dataStorage[i].az); currentFile.println(';');
+        }
+        currentFile.close();
+  //      Serial.println(F("keks"));
+      }
+      else {
+        SensorLive = false;
+      }
+      
+      f2 = micros();
+      savetime += (f2-s2);
+      iterations = 0;
+    }
   }
 }
