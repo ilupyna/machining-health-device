@@ -16,7 +16,7 @@
         <div id="chart_div"></div>
 		
         <div><p>
-          <form method="post" action="http://192.168.0.104:80/req/post">
+          <form method="post" action="http://192.168.0.106:80/req/post">
             <p>Buttons on POST form</p>
             <button name="Led" value="ON">Turn On</button>
             <button name="Led" value="OFF">Turn Off</button>
@@ -25,7 +25,7 @@
         <div>
           <p>Measurements Control Panel</p>
           <p>
-            <form method="post" action="http://192.168.0.104:80/req/post">
+            <form method="post" action="http://192.168.0.106:80/req/post">
               <button name="Msrmnt" value="ON" onclick="online()">Start Measurements</button>
               <button name="Msrmnt" value="OFF" onclick="offline()">Stop Measurements</button>
             </form>
@@ -36,7 +36,7 @@
 			</script>
           </p>
           <p>
-            <form method="get" action="http://192.168.0.104:80/req/get">
+            <form method="get" action="http://192.168.0.106:80/req/get">
               <button name="Download" value="/SensorData.txt">Download SensorData.txt button</button>
             </form>
           </p>
@@ -47,6 +47,8 @@
 		var queue = [];
 		var virtualFile = "";
 		var chart;
+		var data = new Int8Array();
+		var n = 0;
 		
 		function forceDownloadDataFile() {
 			const a = document.createElement('a');
@@ -57,32 +59,24 @@
 			virtualFile = "";
 		}
 		
-		setInterval(function() {
+		setInterval(async function() {
 			if(!live) {
 				return;
 			}
-			getMeasurement(); 
-			drawAxisTickColors();
+			await getMeasurement2();
+			//drawLinearChart();
 			if (virtualFile.length > 64*1024*1024) {
 				forceDownloadDataFile();
 			}
 		}, 100);
 		
 		
-		function drawAxisTickColors() {
+		function drawLinearChart() {
 			if(chart){
 				chart.clearChart();
 			}
 			
-			var data = new google.visualization.DataTable();
-			data.addColumn('number', 'X');
-			data.addColumn('number', 'ax');
-			data.addColumn('number', 'ay');
-			data.addColumn('number', 'az');
-			
-			for(const [key, value] of queue.entries()) {
-				data.addRow([key, value[0], value[1], value[2]]);
-			}
+			var data = new google.visualization.arrayToDataTable([['n','ax','ay','az'], ...queue]);
 			var options = {
 				hAxis: {
 					title: 'Time'
@@ -96,37 +90,112 @@
 			chart.draw(data, options);
 		};
 		
-		
 		async function getMeasurement() {
-			const response = await fetch('http://192.168.0.104:80/msrmnt' 
-			/*	
-				,{
-					method: 'GET', //POST
-					mode: 'no-cors', 
-					//credentials: 'same-origin'
-					headers: {'content-type': 'text/csv'}
-				}
+			const response = await fetch('http://192.168.0.106:80/msrmnt');
+			
+			//console.log(response);
+			const aB = await new Int8Array(response);
+			console.log(aB);
+			
+			if(aB) {
+				console.log('yes');
+			}
+			/*
+			data += aB;
+			
+			virtualFile += aB.join(',');
+			queue.push([n++, ...aB.map(Number)]);//Date.now() //Date().getTime()
+			
+			const aB = await response.arrayBuffer();
+			for(let i=0; i<aB.length; i+=6) {
+				const x = new Int16Array(aB, i, 1);
+				const y = new Int16Array(aB, i+2, 1);
+				const z = new Int16Array(aB, i+3, 1);
+				console.log(x);
+				console.log(y);
+				console.log(z);
+			}
+			//data += aB;
+			//console.log(aB);
+			//virtualFile += aB.join(',');
 			*/
-			);
-			const text = await response.text();
-			if (response.ok) {
-				virtualFile += text + '\n';
-				
-				const arr = text.split(';');
-				
-				for(const line of arr) {
-					if(!line) continue;
-					queue.push(line.split(',').map(Number));
-				}
-				
-				while (queue.length > 1000) {
-					queue.shift();
-				}
+			
+			/*
+			//const rows = data.split(';');//.slice(1);
+			rows.forEach(row => {
+				if(!row) return;
+				virtualFile += data;
+				//queue.push([n++, ...row.split(',').map(Number)]);//Date.now() //Date().getTime()
+			});
+			*/
+			while (queue.length > 1000) {
+				queue.shift();
 			}
-			else {
-				console.log('keks');
+			
+		}
+		
+		
+		async function getMeasurement2() {
+			const response = await fetch('http://192.168.0.106:80/msrmnt');
+			const data = await response.text();
+			
+			virtualFile += data;
+			console.log(data.length);
+			/*
+			const rows = data.split(';');//.slice(1);
+			rows.forEach(row => {
+				if(!row) return;
+				queue.push([n++, ...row.split(',').map(Number)]);//Date.now() //Date().getTime()
+			});
+			
+			while (queue.length > 1000) {
+				queue.shift();
 			}
+			*/
 		}
     </script>
+	<script>
+	/*
+		var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+		var analyser = audioCtx.createAnalyser();
+		
+		analyser.fftSize = 512;	//32, 64, 128, 256, 512, 1024
+		//analyser.sampleRate = ;
+		
+		var bufferLength = analyser.frequencyBinCount;
+		console.log(bufferLength);
+		var dataArray = new Uint8Array(bufferLength);
+
+		canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+
+		function draw() {
+		  drawVisual = requestAnimationFrame(draw);
+
+		  analyser.getByteFrequencyData(dataArray);
+
+		  canvasCtx.fillStyle = 'rgb(0, 0, 0)';
+		  canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
+
+		  var barWidth = (WIDTH / bufferLength) * 2.5;
+		  var barHeight;
+		  var x = 0;
+
+		  for(var i = 0; i < bufferLength; i++) {
+			barHeight = dataArray[i];
+
+			canvasCtx.fillStyle = 'rgb(' + (barHeight+100) + ',50,50)';
+			canvasCtx.fillRect(x,HEIGHT-barHeight/2,barWidth,barHeight/2);
+
+			x += barWidth + 1;
+		  }
+		};
+		
+		//draw();
+	*/
+	</script>
+	
+	<script>
+		
+	</script>
     </body>
   </html>
