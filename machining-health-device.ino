@@ -1,4 +1,3 @@
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 
@@ -9,8 +8,6 @@
 #include <String>
 
 #include "help.h"
-#include "sensor_part.h"
-//#include "fft.h"
 
 
 #include "arduinoFFT.h"
@@ -21,7 +18,9 @@ arduinoFFT FFT = arduinoFFT();
 
 bool led_state = true;  //OFF by default
 bool SensorLive = false;
-bool MeasureToTransmitWireless = true;
+bool MeasureWithTemperature = false;
+bool WITH_ACCEL_RMS = false;
+bool SEND_FFT_RES = true;
 
 
 const char* ssid = "yourNetwork";
@@ -30,41 +29,47 @@ const char* password = "secretPassword";
 ESP8266WebServer server(80);
 
 
-const uint8_t TEMP_SENSOR_COUNT = 1;
-const uint8_t ACCEL_SENSOR_COUNT = 1;
+#define MAX_RESPONSE_SIZE 65536 //1048576 65536
+#define MAX_SINGLE_RESPONSE_SIZE 65472 //MAX_RESPONSE_SIZE-64
+#define CSV_ACCEL_HEADER "" //"time,ax,ay,az;"
+#define CSV_FFT_HEADER "" //"fft result for "+String(FFT_ITERATION)+" intervals";
+
+String MeasurementsForResponse = CSV_ACCEL_HEADER;
+String FFTResultsForResponse = CSV_FFT_HEADER;
+String allertText;
+
+uint8_t REQ_FORMAT = 1;
+uint8_t FFT_TYPE = 5; 
+
+
+#define MAX_MEASUREMENT_FREQ 1000
+#define FFT_MULTIPLIER 2.56 //3.15
+float FREQ_TO_MEASURE = 2.5; //10.666667
+float SAMPLING_FREQ = 1000;  //FREQ_TO_MEASURE * FFT_MULTIPLIER;
+float TIMER_INTERVAL_MICRO = 1001; //1000.0*1000.0/SAMPLING_FREQ;
 
 
 MPU6050 accelgyro;
 int16_t ax, ay, az;
+int16_t temperature;
+uint8_t ACCEL_RANGE = 0; // 0: +-2g; 1: +-4g; 2: +-8g; 3: +-16g
 
 
-const uint8_t FFT_ITERATION = 64; //4 8 16 32 64 128 256 512 1024
+const uint16_t FFT_ITERATION = 256; //4 8 16 32 64 128 256 512 1024
 
 struct AccelForVibrationDataChunk {
-  double ax_arr[FFT_ITERATION];
-//  double ax_sum;
-  double ay_arr[FFT_ITERATION];
-//  double ay_sum;
-  double az_arr[FFT_ITERATION];
-//  double az_sum;
+  float a_inG_arr[FFT_ITERATION];
+  float v_inMMpS_arr[FFT_ITERATION];
   
-  size_t current_size = 0;
+  uint16_t current_size = 0;
   
   bool wasFFT = false;
   bool full = false;
   
   void add(const int16_t ax, const int16_t ay, const int16_t az) {
-//    ax_sum -= ax_arr[current_size];
-    ax_arr[current_size] = accelToG_double(ax);
-//    ax_sum += ax_arr[current_size];
-    
-//    ay_sum -= ay_arr[current_size];
-    ay_arr[current_size] = accelToG_double(ay);
-//    ay_sum += ay_arr[current_size];
-    
-//    az_sum -= az_arr[current_size];
-    az_arr[current_size] = accelToG_double(az);
-//    az_sum += az_arr[current_size];
+    const auto a_in_vec = accelToG<float>(getRMS(ax, ay, az), ACCEL_RANGE)*9.8;  //sqrt(sq(ax) + sq(ay) + sq(az));
+    a_inG_arr[current_size] = a_in_vec;
+    v_inMMpS_arr[current_size] = a_in_vec/(2.0*PI*SAMPLING_FREQ);
     
     ++current_size;
     wasFFT = false;
@@ -75,58 +80,71 @@ struct AccelForVibrationDataChunk {
       current_size = 0;
     }
   }
-
-//  double getMean() const {
-//    return (ax_sum + ay_sum + az_sum)/FFT_ITERATION;
-//  }
-
-  double getRMS() const { //root mean squere value
-    double sum_ax = 0, sum_ay = 0, sum_az = 0;
-    for(uint8_t i=0; i<FFT_ITERATION; i++) {
-      sum_ax += sq(ax_arr[i]);
-      sum_ay += sq(ay_arr[i]);
-      sum_az += sq(az_arr[i]);
+  
+  float getPrevA() const {
+    if(current_size==0) {
+      return a_inG_arr[FFT_ITERATION-1];
     }
-    sum_ax = sqrt(sum_ax/FFT_ITERATION);
-    sum_ay = sqrt(sum_ay/FFT_ITERATION);
-    sum_az = sqrt(sum_az/FFT_ITERATION);
-    return sum_ax + sum_ay + sum_az;
+    return a_inG_arr[current_size-1];
+  }
+  
+  float getPrevV() const {
+    if(current_size==0) {
+      return v_inMMpS_arr[FFT_ITERATION-1];
+    }
+    return v_inMMpS_arr[current_size-1];
+  }
+  
+  template <typename T>
+  void add(const T measurement) {
+    a_inG_arr[current_size] = measurement;
+    
+    ++current_size;
+    wasFFT = false;
+    
+    if(current_size==FFT_ITERATION) {
+//      Serial.println(F("InSizeCheck"));
+      full = true;
+      current_size = 0;
+    }
+  }
+  
+  float getAccelRMS() const { //root mean squere value
+    float sum_a = 0;
+    for(uint16_t i=0; i<FFT_ITERATION; i++) {
+      sum_a += sq(a_inG_arr[i]);
+    }
+    return sqrt(sum_a/FFT_ITERATION);
+  }
+  
+  float getVelRMS() const { //root mean squere value
+    float sum_v = 0;
+    for(uint16_t i=0; i<FFT_ITERATION; i++) {
+      sum_v += sq(v_inMMpS_arr[i]);
+    }
+    return sqrt(sum_v/FFT_ITERATION);
   }
   
   void clear() {
     current_size = 0;
     full = false;
   }
-
-  size_t size() const {
+  
+  uint16_t size() const {
     return current_size;
   }
 };
 
 
 AccelForVibrationDataChunk MPU_measurements;
-double VibrationComparision[FFT_ITERATION];
-double TemreratureComparision = 44;
+float VibrationComparision[FFT_ITERATION];
+float TemreratureComparision = 44;  //random number
+float AccelRMSComparision = 12; //random number
+float VelocityRMSComparision = 22;  //random number
+float VelocityFromFFTComparision = 45; //random number
 
 unsigned long SumFFTTime = 0;
 size_t fft_iteration = 0;
-
-
-
-#define MAX_RESPONSE_SIZE 65536 //1048576 65536
-#define MAX_SINGLE_RESPONSE_SIZE 65472 //MAX_RESPONSE_SIZE-64
-#define CSV_ACCEL_HEADER "" //"time,ax,ay,az;"
-#define CSV_FFT_HEADER "" //"fft result for 64 intervals";
-
-String MeasurementsForResponse = CSV_ACCEL_HEADER;
-String FFTResultsForResponse = CSV_FFT_HEADER;
-
-
-//#define TIMER_INTERVAL_MICRO 1001
-#define FFT_MULTIPLIER 2.56 //2
-double FREQ_TO_MEASURE = 200; //10.666667
-double MEASUREMENT_FREQ = FREQ_TO_MEASURE * FFT_MULTIPLIER;
-double TIMER_INTERVAL_MICRO = 1000.0*1000.0/MEASUREMENT_FREQ;
 
 
 unsigned long MeasureStartTime, MeasureFinTime, MesInterruptStartTime;
@@ -137,10 +155,13 @@ size_t SumResponseSize = 0;
 
 
 
-void SetNewFreq(const double NEW_FREQ) {
-  FREQ_TO_MEASURE = NEW_FREQ;
-  MEASUREMENT_FREQ = FREQ_TO_MEASURE * FFT_MULTIPLIER;
-  TIMER_INTERVAL_MICRO = 1000.0*1000.0/MEASUREMENT_FREQ;
+void SetNewFreq(float new_freq) {
+  if(new_freq > MAX_MEASUREMENT_FREQ) {
+    Serial.println(F("out of range freq"));
+    new_freq = MAX_MEASUREMENT_FREQ;
+  }
+  SAMPLING_FREQ = new_freq;
+  TIMER_INTERVAL_MICRO = 1000.0*1000.0/SAMPLING_FREQ;
 }
 
 void StartMeasurement() {
@@ -159,7 +180,7 @@ void StartMeasurement() {
   MeasureStartTime = micros();
   MesInterruptStartTime = micros();
   
-  AttachTimerInterrupt(TIMER_INTERVAL_MICRO, SensorMeasurements);
+  AttachTimerInterrupt(TIMER_INTERVAL_MICRO, GetSensorMeasurements);
 }
 
 void StopMeasurement() {
@@ -172,39 +193,79 @@ void StopMeasurement() {
   SensorLive = false;
   ax = ay = az = 0;
   
-  for(uint8_t i=0; i<FFT_ITERATION; i++) {
-    Serial.print(MPU_measurements.ax_arr[i]);
-    Serial.print('\t');
-    Serial.print(MPU_measurements.ay_arr[i]);
-    Serial.print('\t');
-    Serial.print(MPU_measurements.az_arr[i]);
-    Serial.println();
+  for(uint16_t i=0; i<FFT_ITERATION; i++) {
+    Serial.println(MPU_measurements.a_inG_arr[i]);
   }
   Serial.println();
 }
 
 
-void SensorMeasurements() {
+
+void Allert (const String text = "") {
+  digitalWrite(LED_BUILTIN, LOW);
+  allertText += text;
+}
+
+
+
+void GetSensorMeasurements() {
   noInterrupts();
   
   SumInterruptDiffTime += micros() - MesInterruptStartTime;
   MesInterruptStartTime = micros();
   
   accelgyro.getAcceleration(&ax, &ay, &az);
-  const auto mesGet = micros();
-  MPU_measurements.add(ax, ay, az);
-
-  if (MeasureToTransmitWireless) {
-    // accelToG CONVERTATION accelToG_double(ax)
-    MeasurementsForResponse += String(ax) +','  
-                            + String(ay) +','
-                            + String(az) +';';
-                            //String(time(nullptr)) +','+
-    if(MeasurementsForResponse.length() > MAX_SINGLE_RESPONSE_SIZE) {
-  //    StopMeasurement();
-      MeasurementsForResponse = "";
-      Serial.println(F("Too Long Response String so cleared"));
+  if(MeasureWithTemperature) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    temperature = accelgyro.getTemperature();
+    if(temperature > TemreratureComparision) {
+      Allert(F("Temperature ")+String(temperature)+(";"));
     }
+  }
+  
+  const auto mesGet = micros();
+  
+  const float accel = accelToG<float>(getRMS<float>(ax, ay, az), ACCEL_RANGE)*9.8;
+  MPU_measurements.add(accel);
+//  MPU_measurements.add(ax,ay,az);
+  
+  if (REQ_FORMAT == 1) {
+    MeasurementsForResponse += (ax & 0xFF) + ax >> 8;
+  }
+  else if(REQ_FORMAT == 2) {
+    MeasurementsForResponse += (ax & 0xFF) + ax >> 8;
+    MeasurementsForResponse += (temperature & 0xFF) + temperature >> 8;
+  }
+  else if(REQ_FORMAT == 3) {
+    MeasurementsForResponse += (ax & 0xFF) + ax >> 8;
+    MeasurementsForResponse += (ay & 0xFF) + az >> 8;
+    MeasurementsForResponse += (az & 0xFF) + ay >> 8;
+  }
+  else if(REQ_FORMAT == 4) {
+    MeasurementsForResponse += (ax & 0xFF) + ax >> 8;
+    MeasurementsForResponse += (ay & 0xFF) + az >> 8;
+    MeasurementsForResponse += (az & 0xFF) + ay >> 8;
+    MeasurementsForResponse += (temperature & 0xFF) + temperature >> 8;
+  }
+  else if(REQ_FORMAT == 5) {
+    MeasurementsForResponse += String((accel));
+  }
+  else if(REQ_FORMAT == 6) {
+    MeasurementsForResponse += String((accel));
+    MeasurementsForResponse += ','+ String(temperature);
+  }
+  else if(REQ_FORMAT == 7) {
+    MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az);
+  }
+  else if(REQ_FORMAT == 8) {
+    MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az);
+    MeasurementsForResponse += ','+ String(temperature);
+  }
+  
+  if(MeasurementsForResponse.length() > MAX_SINGLE_RESPONSE_SIZE) {
+  //    StopMeasurement();
+    MeasurementsForResponse = REQ_FORMAT ? CSV_ACCEL_HEADER : "";
+    Serial.println(F("Response cleared"));
   }
   
   const auto mesFin = micros();
@@ -218,108 +279,98 @@ void SensorMeasurements() {
 
 
 
-void makeFFT(double ARR[FFT_ITERATION]) {
-  const auto fftStartTime = micros();
-//  const float fastFFT = Q_FFT(fftArrX, FFT_ITERATION, MEASUREMENT_FREQ);
-//  const auto fftFinTime = micros();
-//  SumFFTTime += fftFinTime - fftStartTime;
-//  ++fft_iteration;
-//  Serial.println(fastFFT);
-//  return;
-  
-  double vImag[FFT_ITERATION] = {0};
-  
-  FFT.DCRemoval(ARR, FFT_ITERATION);
-  
-  const auto windowingStartTime = micros();
-  FFT.Windowing(ARR, FFT_ITERATION, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
-  
-  const auto computingStartTime = micros();
-  FFT.Compute(ARR, vImag, FFT_ITERATION, FFT_FORWARD);
-  
-  const auto toMagnitudeStartTime = micros();
-  FFT.ComplexToMagnitude(ARR, vImag, FFT_ITERATION);
-  
-  const auto fftFinTime = micros();
-  
-//  for(uint8_t i=0; i<FFT_ITERATION; i++) {
-//    Serial.print((i*1.0*MEASUREMENT_FREQ)/FFT_ITERATION);
-//    Serial.print(F(" Hz \t"));
-//    Serial.println(ARR[i]);
-//  }
-  
-//  const auto majorPeakStartTime = micros();
-//  double x = FFT.MajorPeak(ARR, samples, MEASUREMENT_FREQ);
-  
-//  const auto fftFinTime = micros();
-  SumFFTTime += fftFinTime - fftStartTime;
-  ++fft_iteration;
-  
-//  Serial.print(windowingStartTime - mesGet);
-//  Serial.print('\t');
-//  Serial.print(computingStartTime - windowingStartTime);
-//  Serial.print('\t');
-//  Serial.print(toMagnitudeStartTime - computingStartTime);
-//  Serial.print('\t');
-//  Serial.print(majorPeakStartTime - toMagnitudeStartTime);
-//  Serial.print('\t');
-//  Serial.print(fftFinTime-majorPeakStartTime);
-//  Serial.println(" mks");
-  
-//  Serial.print(F("SumFFTTime: "));
-//  Serial.print(SumFFTTime/fft_iteration);
-//  Serial.println(F("mks;"));
-//  Serial.flush();
-}
+void VibroMonitor(AccelForVibrationDataChunk& measurements) {
+  digitalWrite(LED_BUILTIN, HIGH);
+  if(FFT_TYPE != 0) {
+    Serial.println(F("in FFT"));
+    const auto fftStartTime = micros();
+    
+    float ARR[FFT_ITERATION];
+    noInterrupts();
+    if(FFT_TYPE == 1) {
+      for(uint16_t i=0; i<FFT_ITERATION; i++) {
+        ARR[i] = measurements.a_inG_arr[i];
+      }
+    }
+    else if (FFT_TYPE == 2) {
+      for(uint16_t i=0; i<FFT_ITERATION; i++) {
+        ARR[i] = measurements.v_inMMpS_arr[i];
+      }
+    }
+    interrupts();
+    
+    float vImag[FFT_ITERATION] = {0};
+//    FFT.DCRemoval(ARR, FFT_ITERATION);
+    FFT.Windowing(ARR, FFT_ITERATION, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT.Compute(ARR, vImag, FFT_ITERATION, FFT_FORWARD);
+    FFT.ComplexToMagnitude(ARR, vImag, FFT_ITERATION);
+    
+    const auto fftFinTime = micros();
+    
+    SumFFTTime += fftFinTime - fftStartTime;
+    ++fft_iteration;
 
+    Serial.println(FFT.MajorPeak(ARR, FFT_ITERATION, SAMPLING_FREQ), 3);
+    
+  //  Serial.print(F("SumFFTTime: "));
+  //  Serial.print(SumFFTTime/fft_iteration);
+  //  Serial.println(F("mks;"));
+  //  Serial.flush();
+    
+    measurements.wasFFT = true;
 
-void VibroMonitor(AccelForVibrationDataChunk& AccelARR) {
-  noInterrupts();
-//  StopMeasurement();  //!
-//  const double arrCopyStartTime = micros();
-
-  /*
-  double fftArrX[FFT_ITERATION], fftArrY[FFT_ITERATION], fftArrZ[FFT_ITERATION];
-  for(uint8_t i=0; i<FFT_ITERATION; i++) {
-    fftArrX[i] = AccelARR.ax_arr[i];
-    fftArrY[i] = AccelARR.ay_arr[i];
-    fftArrZ[i] = AccelARR.az_arr[i];
-  }
-  */
-  double fftArr[FFT_ITERATION];
-  for(uint8_t i=0; i<FFT_ITERATION; i++) {
-    fftArr[i] = sqrt(sq(AccelARR.ax_arr[i]) + sq(AccelARR.ay_arr[i]) + sq(AccelARR.az_arr[i]));
-  }
-  
-//  const double arrCopyFinTime = micros();
-  
-  interrupts();
-  
-//  Serial.print(F("arrCopyTime: "));
-//  Serial.print(arrCopyFinTime - arrCopyStartTime);
-//  Serial.println(F("mks;"));
-//  
-//  makeFFT(fftArrX);
-//  makeFFT(fftArrY);
-//  makeFFT(fftArrZ);
-  makeFFT(fftArr);
-
-  AccelARR.wasFFT = true;
-  
-  FFTResultsForResponse = CSV_FFT_HEADER;
-  for(uint8_t i=0; i<FFT_ITERATION; i++) {
-//    const double AccelAfterFFT = fftArrX[i] + fftArrY[i] + fftArrZ[i];  // ()/3 ?
-    const double AccelAfterFFT = fftArr[i];
-    if(MeasureToTransmitWireless) {
-      FFTResultsForResponse += String(AccelAfterFFT) +',';
+    float v_rms = 0;
+    FFTResultsForResponse = CSV_FFT_HEADER;
+    for(uint16_t i=0; i<FFT_ITERATION; i++) {
+      const float AccelAfterFFT = ARR[i];
+      if(SEND_FFT_RES != 0) {
+        FFTResultsForResponse += String(AccelAfterFFT)+';';
+      }
+      
+      if(FFT_TYPE == 2) {
+        const float freq_i = (i*1.0*SAMPLING_FREQ)/FFT_ITERATION;
+        v_rms += sq(ARR[i]/freq_i);
+      }
+      
+      if(FFT_TYPE == 1 && AccelAfterFFT > VibrationComparision[i]) {
+        /*
+        const String allert_text = F("Alert in ") 
+                                  + String((i*1.0*SAMPLING_FREQ)/FFT_ITERATION) 
+                                  + F(" Hz with accel ") 
+                                  + String(AccelAfterFFT) 
+                                  + F(" value;");
+        Allert(allert_text);
+        */
+        Allert();
+      }
     }
     
-    if(AccelAfterFFT > VibrationComparision[i]) {
-      Serial.print(F("Alert in "));
-      Serial.print((i*1.0*MEASUREMENT_FREQ)/FFT_ITERATION);
-      Serial.print(F(" Hz because "));
-      Serial.print(AccelAfterFFT);
-      Serial.println(F(" value"));
+    if(FFT_TYPE == 2) {
+      v_rms = sqrt(v_rms);
+      if(v_rms > VelocityFromFFTComparision) {
+        /*
+        const String allert_text = F("Alert in ") 
+                                  + String((i*1.0*SAMPLING_FREQ)/FFT_ITERATION) 
+                                  + F(" Hz with velocity ") 
+                                  + String(AccelAfterFFT) 
+                                  + F(" value;");
+        Allert(allert_text);
+        */
+        Allert();
+      }
+    }
+  }
+  
+  if(WITH_ACCEL_RMS) {
+    const auto accel_rms = measurements.getAccelRMS();
+    if(accel_rms > AccelRMSComparision) {
+      /*
+      const String allert_text = F("Alert because accel RMS ") 
+                                + String(accel_rms) 
+                                + F(" value;");
+      Allert(allert_text);
+      */
+      Allert();
     }
   }
 }
@@ -432,7 +483,7 @@ void setup() {
   Serial.flush();
   
   Wire.begin();
-  Wire.setClock(400000);
+  Wire.setClock(500000);
   accelgyro.initialize();
   
   if( accelgyro.testConnection() ) {
@@ -453,19 +504,19 @@ void setup() {
   
   Serial.print(F("getRate:"));
   Serial.print(accelgyro.getRate());
-//  accelgyro.setRate(0);  //4
+//  accelgyro.setRate(0);  //4 7
   Serial.print(',');
   Serial.println(accelgyro.getRate());
   
   Serial.print(F("getAccelScale:"));
   Serial.print(accelgyro.getFullScaleAccelRange());
-//  accelgyro.setFullScaleAccelRange(1);  //0
+//  accelgyro.setFullScaleAccelRange(ACCEL_RANGE);  //0
   Serial.print(',');
   Serial.println(accelgyro.getFullScaleAccelRange());
 
   /*
     const auto accelRange = accelgyro.getFullScaleAccelRange();
-    const double ACCEL_TO_G_DIVIDER = accelRange == 0 ? 16384.0 :
+    const float ACCEL_TO_G_DIVIDER = accelRange == 0 ? 16384.0 :
                                       accelRange == 1 ? 8192.0 :
                                       accelRange == 2 ? 4096.0 : 2048.0;
   */
@@ -476,7 +527,7 @@ void setup() {
   accelgyro.PrintActiveOffsets();
   
   //GET SOME RATING TO COMPARE VIBRATION AFTER FFT
-  for(uint8_t i; i<FFT_ITERATION; i++) {
+  for(uint16_t i=0; i<FFT_ITERATION; i++) {
     VibrationComparision[i] = 2.0;
   }
   
@@ -522,64 +573,150 @@ void setup() {
     Serial.print(msg);
     
     if (server.arg("Led") == "ON") {
-      Serial.println(F("Led go ON"));
       led_state = LOW;
       digitalWrite(LED_BUILTIN, led_state);
+      Serial.println(F("Led go ON"));
     }
     else if (server.arg("Led") == "OFF") {
-      Serial.println(F("Led go OFF"));
       led_state = HIGH;
       digitalWrite(LED_BUILTIN, led_state);
+      Serial.println(F("Led go OFF"));
     }
+    
     if (server.arg("Msrmnt") == "ON") {
       Serial.println(F("Msrmnt start"));
       StartMeasurement();
     }
     else if (server.arg("Msrmnt") == "OFF") {
-      Serial.println(F("Msrmnt stop"));
       StopMeasurement();
+      Serial.println(F("Msrmnt stop"));
     }
-    if (server.arg("WirelessTransmit") == "ON") {
-      Serial.println(F("WirelessTransmit on"));
-      MeasureToTransmitWireless = true;
+    
+    if (server.arg("TempMeasurement") == "ON") {
+      accelgyro.setTempSensorEnabled(0);
+      Serial.print(F("Temperature measurement on: "));
+      Serial.println(accelgyro.getTempSensorEnabled());
+      MeasureWithTemperature = true;
     }
-    else if (server.arg("WirelessTransmit") == "OFF") {
-      Serial.println(F("WirelessTransmit off"));
-      MeasureToTransmitWireless = false;
+    else if (server.arg("TempMeasurement") == "OFF") {
+      MeasureWithTemperature = false;
+      accelgyro.setTempSensorEnabled(1);
+      Serial.print(F("Temperature measurement off:"));
+      Serial.println(accelgyro.getTempSensorEnabled());
     }
+    
+    if (server.arg("ReqFormat") == "0") {
+      REQ_FORMAT = 0;
+      MeasurementsForResponse = "";
+      Serial.println(F("no send"));
+    }
+    else if (server.arg("ReqFormat") == "blob1") {
+      REQ_FORMAT = 1;
+      MeasurementsForResponse = "";
+      Serial.println(F("blob vector accel format"));
+    }
+    else if (server.arg("ReqFormat") == "blob2") {
+      REQ_FORMAT = 2;
+      MeasurementsForResponse = "";
+      Serial.println(F("blob vector accel format"));
+    }
+    else if (server.arg("ReqFormat") == "blob3") {
+      REQ_FORMAT = 3;
+      MeasurementsForResponse = "";
+      Serial.println(F("csv 3 accel format"));
+    }
+    else if (server.arg("ReqFormat") == "blob4") {
+      REQ_FORMAT = 4;
+      MeasurementsForResponse = "";
+      Serial.println(F("csv 3 accel format"));
+    }
+    else if (server.arg("ReqFormat") == "csv1") {
+      REQ_FORMAT = 5;
+      MeasurementsForResponse = "";
+      Serial.println(F("csv vector accel format"));
+    }
+    else if (server.arg("ReqFormat") == "csv2") {
+      REQ_FORMAT = 6;
+      MeasurementsForResponse = "";
+      Serial.println(F("csv vector accel format"));
+    }
+    else if (server.arg("ReqFormat") == "csv3") {
+      REQ_FORMAT = 7;
+      MeasurementsForResponse = "";
+      Serial.println(F("csv vector accel format"));
+    }
+    else if (server.arg("ReqFormat") == "csv4") {
+      REQ_FORMAT = 8;
+      MeasurementsForResponse = "";
+      Serial.println(F("csv 3 accel format"));
+    }
+    
+    if (server.arg("WithFFT") == "OFF") {
+      FFT_TYPE = 0;
+      Serial.println(F("FFT off"));
+    }
+    else if (server.arg("WithFFT") == "ACCEL") {
+      FFT_TYPE = 1;
+      Serial.println(F("FFT on accel"));
+    }
+    else if (server.arg("WithFFT") == "VEL") {
+      FFT_TYPE = 2;
+      Serial.println(F("FFT on velocity"));
+    }
+    
+    if (server.arg("AccelRMS") == "ON") {
+      WITH_ACCEL_RMS = true;
+      Serial.println(F("Accel RMS on"));
+    }
+    else if (server.arg("AccelRMS") == "OFF") {
+      WITH_ACCEL_RMS = false;
+      Serial.println(F("Accel RMS off"));
+    }
+
+    if (server.arg("SendFFTRes") == "ON") {
+      SEND_FFT_RES = true;
+      Serial.println(F("Send FFT on"));
+    }
+    else if (server.arg("SendFFTRes") == "OFF") {
+      SEND_FFT_RES = false;
+      Serial.println(F("Send FFT off"));
+    }
+
+    
     if (server.hasArg("NewAccelRange")) {
+      const String new_range = server.arg("NewAccelRange");
+      ACCEL_RANGE = new_range == "16g" ? 3 :
+                    new_range == "8g" ? 2 :
+                    new_range == "4g" ? 1 : 0 ;
+      accelgyro.setFullScaleAccelRange(ACCEL_RANGE);
       Serial.println(F("New accel range"));
-      Serial.print(accelgyro.getFullScaleAccelRange());
-      const String new_range = server.arg("NewMeasurementFreq");
-      const uint8_t accelRange = new_range == "+-16g" ? 3 :
-                                  new_range == "+-8g" ? 2 :
-                                  new_range == "+-4g" ? 1 : 0 ;
-      accelgyro.setFullScaleAccelRange(accelRange);
-      Serial.print(',');
       Serial.println(accelgyro.getFullScaleAccelRange());
     }
     if (server.hasArg("NewMeasurementFreq")) {
-      Serial.println(F("New measurement freq"));
-      Serial.print(FREQ_TO_MEASURE);
-      Serial.print(',');
       SetNewFreq(server.arg("NewMeasurementFreq").toFloat());
-      Serial.println(FREQ_TO_MEASURE);
+      Serial.println(F("New measurement freq"));
+      Serial.println(SAMPLING_FREQ);
+    }
+    if (server.hasArg("NewAccelRMS")) {
+      AccelRMSComparision = server.arg("NewAccelRMS").toFloat();
+      Serial.println(F("New accel RMS"));
+      Serial.println(AccelRMSComparision);
+    }
+    if (server.hasArg("NewVeloRMS")) {
+      VelocityRMSComparision = server.arg("NewVeloRMS").toFloat();
+      Serial.println(F("New velocity RMS"));
+      Serial.println(VelocityRMSComparision);
     }
     if (server.hasArg("NewTempLimit")) {
+      TemreratureComparision = server.arg("NewLimits").toFloat();
       Serial.println(F("New temperature limits"));
-      Serial.print(TemreratureComparision);
-      Serial.print(',');
-      const double new_TemreratureComparision = server.arg("NewLimits").toFloat();
-//      TemreratureComparision = new_TemreratureComparision;
-      Serial.println(new_TemreratureComparision); //TemreratureComparision
+      Serial.println(TemreratureComparision);
     }
     if (server.hasArg("NewIntervalCount")) {
-      Serial.println(F("New interval count"));
-      Serial.print(FFT_ITERATION);
-      Serial.print(',');
-      const double new_interval_count = server.arg("NewIntervalCount").toInt();
+      const float new_interval_count = server.arg("NewIntervalCount").toInt();
 //      FFT_ITERATION = new_interval_count;
-      Serial.println(new_interval_count); //FFT_ITERATION
+      Serial.println(F("New interval count NOT WORKING NOW"));
+      Serial.println(FFT_ITERATION);
     }
     if (server.hasArg("NewFreqLimits")) {
       Serial.println(F("New freq limits"));
@@ -595,7 +732,7 @@ void setup() {
           Serial.print(freq_it);
           Serial.print(':');
           
-          const double new_limit_tmp = new_freq_values.substring(prev_pos, curr_pos).toFloat();
+          const float new_limit_tmp = new_freq_values.substring(prev_pos, curr_pos).toFloat();
           VibrationComparision[freq_it++] = new_limit_tmp;
           prev_pos = curr_pos+1;
           
@@ -625,36 +762,29 @@ void setup() {
     
     Serial.print(msg);
     
-    if (server.hasArg("TempSensorsCount")) {
-      server.send(200, "text/plain", String(TEMP_SENSOR_COUNT));
-    }
-    if (server.hasArg("AccelSensorsCount")) {
-      server.send(200, "text/plain", String(ACCEL_SENSOR_COUNT));
-    }
     if (server.hasArg("MeasurementFreq")) {
-      server.send(200, "text/plain", String(FREQ_TO_MEASURE));
+      server.send(200, "text/plain", String(SAMPLING_FREQ));
     }
     if (server.hasArg("FFTintervals")) {
       server.send(200, "text/plain", String(FFT_ITERATION));
     }
     if (server.hasArg("FFTlimits")) {
       String payload;
-      for(uint8_t i=0; i<FFT_ITERATION; i++) {
+      for(uint16_t i=0; i<FFT_ITERATION; i++) {
         payload += String(VibrationComparision[i])+',';
       }
       server.send(200, "text/plain", payload);
     }
     if (server.hasArg("AccelRange")) {
-      const auto accelRange = accelgyro.getFullScaleAccelRange();
-      const String payload = accelRange == 0 ? "+-2g" :
-                              accelRange == 1 ? "+-4g" :
-                              accelRange == 2 ? "+-8g" : "+-16g";
+      const String payload = ACCEL_RANGE == 0 ? "+-2g" :
+                              ACCEL_RANGE == 1 ? "+-4g" :
+                              ACCEL_RANGE == 2 ? "+-8g" : "+-16g";
       server.send(200, "text/plain", payload);
     }
-//    if (server.hasArg("GetAlerts")) {
-//      String Alert_str = "";
-//      server.send(200, "text/plain", Alert_str);
-//    }
+    if (server.hasArg("GetAlerts")) {
+      server.send(200, "text/plain", allertText);
+      allertText = "";
+    }
   });
   
   
@@ -664,8 +794,14 @@ void setup() {
     SumResponseSize += MeasurementsForResponse.length();
     
     auto SendingStartTime = micros();
-    server.send(200, "text/csv", MeasurementsForResponse);  // arraybuffer/blob text/plain  text/csv
-    MeasurementsForResponse = CSV_ACCEL_HEADER;
+    if(REQ_FORMAT > 4) {
+      server.send(200, "text/csv", MeasurementsForResponse);
+    }
+    else {
+      server.send(200, "arraybuffer/blob", MeasurementsForResponse);
+    }
+    
+    MeasurementsForResponse = "";
     auto SendingFinTime = micros();
     
     SumResponseTime += SendingFinTime-SendingStartTime;
@@ -678,7 +814,7 @@ void setup() {
 //    
 //    auto SendingStartTime = micros();
     server.send(200, "text/csv", FFTResultsForResponse);  // arraybuffer/blob text/plain  text/csv
-    MeasurementsForResponse = CSV_FFT_HEADER;
+    MeasurementsForResponse = "";
 //    auto SendingFinTime = micros();
 //    
 //    SumResponseTime += SendingFinTime-SendingStartTime;
