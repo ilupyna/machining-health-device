@@ -12,30 +12,11 @@
 		<div><p id="ay"></p></div>
 		<div><p id="az"></p></div>
 		
-        <div><p><!--Data: 
-          <span id=\"post_here\">-/-</span>
-		  xmlns="http://www.w3.org/2000/svg"
-		  --->
-			<svg width="400" height="150" id="graph">
-				<rect width="400" height="150" fill="rgb(250, 230, 210)" stroke-width="1" stroke="rgb(0, 0, 0)"/>
-				<g stroke-width="1">
-					<line x1="10" y1="14" x2="20" y2="56" stroke="red"/>
-					<line x1="20" y1="56" x2="30" y2="76" stroke="red"/>
-					<line x1="30" y1="76" x2="40" y2="43" stroke="red"/>
-					<line x1="40" y1="43" x2="50" y2="55" stroke="red"/>
-					<line x1="50" y1="55" x2="60" y2="23" stroke="red"/>
-					<line x1="60" y1="23" x2="70" y2="11" stroke="red"/>
-					<line x1="10" y1="14" x2="20" y2="14" stroke="green"/>
-					<line x1="20" y1="14" x2="70" y2="99" stroke="green"/>
-					<line x1="10" y1="55" x2="20" y2="44" stroke="blue"/>
-					<line x1="20" y1="44" x2="70" y2="120" stroke="blue"/>
-				</g>
-			</svg>
-			
-        </p></div>
+		<script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+        <div id="chart_div"></div>
 		
         <div><p>
-          <form method="post" action="http://192.168.0.104:80/req/post">
+          <form method="post" action="http://192.168.0.101:80/req/post">
             <p>Buttons on POST form</p>
             <button name="Led" value="ON">Turn On</button>
             <button name="Led" value="OFF">Turn Off</button>
@@ -44,68 +25,82 @@
         <div>
           <p>Measurements Control Panel</p>
           <p>
-            <form method="post" action="http://192.168.0.104:80/req/post">
+            <form method="post" action="http://192.168.0.101:80/req/post">
               <button name="Msrmnt" value="ON">Start Measurements</button>
               <button name="Msrmnt" value="OFF">Stop Measurements</button>
             </form>
           </p>
           <p>
-            <form method="get" action="http://192.168.0.104:80/req/get">
+            <form method="get" action="http://192.168.0.101:80/req/get">
               <button name="Download" value="/SensorData.txt">Download SensorData.txt button</button>
             </form>
           </p>
         </div>
     
     <script>
+		google.charts.load('current', {packages: ['corechart', 'line']});
+		
 		var queue  = [];
-      setInterval(function() {getMeasurement();}, 10000);
-	  
-      function getMeasurement() {
-        var xhttp = new XMLHttpRequest();
+		setInterval(function() {getMeasurement(); drawAxisTickColors();}, 100);
 		
-		//xhttp.responseType = "blob";
-		xhttp.open("GET", "http://192.168.0.104:80/msrmnt", true);
-        xhttp.send();
-		
-        xhttp.onload = function() {
-          if (this.status == 200) {
-			//var parser = new DOMParser();
-			//var doc1 = parser.parseFromString(xmlString, "text/xml");
+		function drawAxisTickColors() {
+			var data = new google.visualization.DataTable();
+			data.addColumn('number', 'X');
+			data.addColumn('number', 'ax');
+			data.addColumn('number', 'ay');
+			data.addColumn('number', 'az');
 			
-			var arr = this.response.split(',');
-			//console.log(arr);
-			
-			queue.push(arr);
-            if(queue.length > 10) {
-				queue.shift();
+			for(const [key, value] of queue.entries()) {
+				data.addRow([key, value[0], value[1], value[2]]);
 			}
+			var options = {
+				hAxis: {
+					title: 'Time'
+				},
+				vAxis: {
+					title: 'Acceleration'
+				},
+				colors: ['#a52714', '#14a527', '#2714a5']
+			};
+			var chart = new google.visualization.LineChart(document.getElementById('chart_div'));
+			chart.draw(data, options);
 			
-			document.getElementById("ax").innerHTML = "ax: ";
-			document.getElementById("ay").innerHTML = "ay: ";
-			document.getElementById("az").innerHTML = "az: ";
+			//delete data;
+			//delete chart;
+		};
+		
+		
+		function getMeasurement() {
+			var xhttp = new XMLHttpRequest();
 			
-			for (const el of queue)  {
-				//console.log(el);
-				document.getElementById("ax").innerHTML += el[0] + ';';
-				document.getElementById("ay").innerHTML += el[1] + ';';
-				document.getElementById("az").innerHTML += el[2] + ';';
+			//xhttp.responseType = "blob";
+			xhttp.open("GET", "http://192.168.0.101:80/msrmnt", true);
+			xhttp.send();
+			
+			xhttp.onload = function() {
+				if (this.status == 200) {
+					//var parser = new DOMParser();
+					//var doc1 = parser.parseFromString(xmlString, "text/xml");
+					
+					var arr = this.response.split(',').map(Number);
+					//console.log(arr);
+					
+					queue.push(arr);
+					if(queue.length > 100) {
+						queue.shift();
+					}
+					
+					document.getElementById("ax").innerHTML = "ax: "+arr[0]+";";
+					document.getElementById("ay").innerHTML = "ay: "+arr[1]+";";
+					document.getElementById("az").innerHTML = "az: "+arr[2]+";";
+				}
+				else {
+					console.log('keks');
+				}
 			};
 			
-			/*
-			//console.log(document.getElementById("graph").innerHTML);
-			graph = document.getElementById("graph").innerHTML;
-			graph = "<rect width=\"400\" height=\"150\" fill=\"rgb(250, 230, 210)\"/>";
-			for() {
-				graph += "<line x1="10" y1="14" x2="20" y2="56" stroke="red"/>";
-			}
-			*/
-          }
-		  else {
-			console.log('keks');
-		  }
-        };
-      }
-      
+			//delete xhttp;
+		}
     </script>
     </body>
   </html>
