@@ -16,7 +16,7 @@
         <div id="chart_div"></div>
 		
         <div><p>
-          <form method="post" action="http://192.168.0.101:80/req/post">
+          <form method="post" action="http://192.168.0.104:80/req/post">
             <p>Buttons on POST form</p>
             <button name="Led" value="ON">Turn On</button>
             <button name="Led" value="OFF">Turn Off</button>
@@ -25,25 +25,55 @@
         <div>
           <p>Measurements Control Panel</p>
           <p>
-            <form method="post" action="http://192.168.0.101:80/req/post">
-              <button name="Msrmnt" value="ON">Start Measurements</button>
-              <button name="Msrmnt" value="OFF">Stop Measurements</button>
+            <form method="post" action="http://192.168.0.104:80/req/post">
+              <button name="Msrmnt" value="ON" onclick="online()">Start Measurements</button>
+              <button name="Msrmnt" value="OFF" onclick="offline()">Stop Measurements</button>
             </form>
+			<script>
+				var live = false;
+				function online(){live = true;}
+				function offline(){live = false; forceDownloadDataFile();}
+			</script>
           </p>
           <p>
-            <form method="get" action="http://192.168.0.101:80/req/get">
+            <form method="get" action="http://192.168.0.104:80/req/get">
               <button name="Download" value="/SensorData.txt">Download SensorData.txt button</button>
             </form>
           </p>
         </div>
-    
     <script>
 		google.charts.load('current', {packages: ['corechart', 'line']});
 		
-		var queue  = [];
-		setInterval(function() {getMeasurement(); drawAxisTickColors();}, 100);
+		var queue = [];
+		var virtualFile = "";
+		var chart;
+		
+		function forceDownloadDataFile() {
+			const a = document.createElement('a');
+			a.download = 'data.csv';
+			a.href = URL.createObjectURL(new Blob ([virtualFile], {type : 'text/plain'}));
+			a.click();
+			
+			virtualFile = "";
+		}
+		
+		setInterval(function() {
+			if(!live) {
+				return;
+			}
+			getMeasurement(); 
+			drawAxisTickColors();
+			if (virtualFile.length > 64*1024*1024) {
+				forceDownloadDataFile();
+			}
+		}, 100);
+		
 		
 		function drawAxisTickColors() {
+			if(chart){
+				chart.clearChart();
+			}
+			
 			var data = new google.visualization.DataTable();
 			data.addColumn('number', 'X');
 			data.addColumn('number', 'ax');
@@ -62,44 +92,40 @@
 				},
 				colors: ['#a52714', '#14a527', '#2714a5']
 			};
-			var chart = new google.visualization.LineChart(document.getElementById('chart_div'));
+			chart = new google.visualization.LineChart(document.getElementById('chart_div'));
 			chart.draw(data, options);
-			
-			//delete data;
-			//delete chart;
 		};
 		
 		
-		function getMeasurement() {
-			var xhttp = new XMLHttpRequest();
-			
-			//xhttp.responseType = "blob";
-			xhttp.open("GET", "http://192.168.0.101:80/msrmnt", true);
-			xhttp.send();
-			
-			xhttp.onload = function() {
-				if (this.status == 200) {
-					//var parser = new DOMParser();
-					//var doc1 = parser.parseFromString(xmlString, "text/xml");
-					
-					var arr = this.response.split(',').map(Number);
-					//console.log(arr);
-					
-					queue.push(arr);
-					if(queue.length > 100) {
-						queue.shift();
-					}
-					
-					document.getElementById("ax").innerHTML = "ax: "+arr[0]+";";
-					document.getElementById("ay").innerHTML = "ay: "+arr[1]+";";
-					document.getElementById("az").innerHTML = "az: "+arr[2]+";";
+		async function getMeasurement() {
+			const response = await fetch('http://192.168.0.104:80/msrmnt' 
+			/*	
+				,{
+					method: 'GET', //POST
+					mode: 'no-cors', 
+					//credentials: 'same-origin'
+					headers: {'content-type': 'text/csv'}
 				}
-				else {
-					console.log('keks');
+			*/
+			);
+			const text = await response.text();
+			if (response.ok) {
+				virtualFile += text + '\n';
+				
+				const arr = text.split(';');
+				
+				for(const line of arr) {
+					if(!line) continue;
+					queue.push(line.split(',').map(Number));
 				}
-			};
-			
-			//delete xhttp;
+				
+				while (queue.length > 1000) {
+					queue.shift();
+				}
+			}
+			else {
+				console.log('keks');
+			}
 		}
     </script>
     </body>
