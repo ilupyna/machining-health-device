@@ -1,7 +1,6 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <LittleFS.h>
 
 #include "I2Cdev.h"
 #include "MPU6050.h"
@@ -25,24 +24,13 @@ ESP8266WebServer server(80);
 MPU6050 accelgyro;
 int16_t ax, ay, az;
 
-struct dataObj {
-//  time_t timeStomp;
-  int16_t ax, ay, az;
-};
-
-dataObj database[DATA_SIZE_MAX];
-
-//#define RESPONSE_SIZE 1024
-//#define MAX_SINGLE_RESPONSE_SIZE 1006 //1024-18
+#define MAX_RESPONSE_SIZE 65536 //1048576 65536
+#define MAX_SINGLE_RESPONSE_SIZE 65472 //MAX_RESPONSE_SIZE-64
 String MeasurementsForResponse;
-
-
-//File currentFile;
 
 unsigned long Start, Finish, WorkTime = 0;
 unsigned long MeanResponseTime = 1, MeanMeasureTime = 1;
 size_t iterations = 0;
-uint8_t measurement_pos = 0;
 
 
 const String preparedHtmlPage = 
@@ -56,78 +44,124 @@ const String preparedHtmlPage =
         "</style>"\
       "</head>"\
       "<body>"\
-      
-        "<div><p>Data: "\
-          "<span id=\"ax\">-/-</span>"\
-          "<span id=\"ay\">-/-</span>"\
-          "<span id=\"az\">-/-</span>"\
-        "</p></div>"\
-      /**/
-        "<div><p>"\
-          "<form method=\"post\" action=\"/req/post\">"\
-            "<p>Buttons on POST form</p>"\
-            "<button name=\"Led\" value=\"ON\">Turn On</button>"\
-            "<button name=\"Led\" value=\"OFF\">Turn Off</button>"\
-          "</form>"\
-        "</p></div>"\
+        "<div id=\"ax\"></div>"\
+        "<div id=\"ay\"></div>"\
+        "<div id=\"az\"></div>"\
+        "<script type=\"text/javascript\" src=\"https://www.gstatic.com/charts/loader.js\"></script>"\
+        "<div id=\"chart_div\"></div>"\
         "<div>"\
           "<p>Measurements Control Panel</p>"\
           "<p>"\
             "<form method=\"post\" action=\"/req/post\">"\
-              "<button name=\"Msrmnt\" value=\"ON\">Start Measurements</button>"\
-              "<button name=\"Msrmnt\" value=\"OFF\">Stop Measurements</button>"\
+              "<button name=\"Msrmnt\" value=\"ON\" onclick=\"online()\">Start Measurements</button>"\
+              "<button name=\"Msrmnt\" value=\"OFF\" onclick=\"offline()\">Stop Measurements</button>"\
             "</form>"\
-          "</p>"\
-          "<p>"\
-            "<form method=\"get\" action=\"/req/get\">"\
-              "<button name=\"Download\" value=\"/SensorData.txt\">Download SensorData.txt button</button>"\
-            "</form>"\
+            "<script>"\
+              "var live=false;"\
+              "function online(){live=true;}"\
+              "function offline(){live=false; forceDownloadDataFile();}"\
+            "</script>"\
           "</p>"\
         "</div>"\
-    
     "<script>"\
-      "setInterval(function() {getMeasurement();}, 5000);"\
-      
-      "function getMeasurement() {"\
-        "var xhttp = new XMLHttpRequest();"\
-        "xhttp.onreadystatechange = function() {"\
-          "if (this.readyState == 4 && this.status == 200) {"\
-            "document.getElementById(\"post_here\").innerHTML += this.responseText + ';';"\
+      "google.charts.load('current',{packages:['corechart','line']});"\
+      "var queue=[];"\
+      "var virtualFile=\"\";"\
+      "var chart;"\
+      "function forceDownloadDataFile(){"\
+        "const a=document.createElement('a');"\
+        "a.download='data.csv';"\
+        "a.href=URL.createObjectURL(new Blob([virtualFile],{type:'text/plain'}));"\
+        "a.click();"\
+        "virtualFile=\"\";"\
+      "}"\
+      "setInterval(function(){"\
+        "if(!live){return;}"\
+        "getMeasurement();"\
+        "drawAxisTickColors();"\
+        "if (virtualFile.length>64*1024*1024) {"\
+          "forceDownloadDataFile();"\
+        "}"\
+      "},100);"\
+      "function drawAxisTickColors(){"\
+        "if(chart){chart.clearChart();}"\
+        "var data=new google.visualization.DataTable();"\
+        "data.addColumn('number','X');"\
+        "data.addColumn('number','ax');"\
+        "data.addColumn('number','ay');"\
+        "data.addColumn('number','az');"\
+        "for(const [key, value] of queue.entries()){"\
+          "data.addRow([key,value[0],value[1],value[2]]);"\
+        "}"\
+        "var options={"\
+          "hAxis:{title:'Time'},"\
+          "vAxis:{title:'Acceleration'},"\
+          "colors:['#a52714','#14a527','#2714a5']"\
+        "};"\
+        "chart=new google.visualization.LineChart(document.getElementById('chart_div'));"\
+        "chart.draw(data,options);"\
+      "};"\
+      "function getMeasurement(){"\
+        "var xhttp=new XMLHttpRequest();"\
+        "xhttp.open(\"GET\",\"/msrmnt\",true);"\
+        "xhttp.send();"\
+        "xhttp.onload=function(){"\
+          "if(this.status==200) {"\
+            "virtualFile+=this.response+'\\n';"\
+            "const arr=this.response.split(';');"\
+            "for(const line of arr){"\
+              "if(!line)continue;"\
+              "queue.push(line.split(',').map(Number));"\
+            "}"\
+            "while(queue.length>1000){"\
+              "queue.shift();"\
+            "}"\
+          "}"\
+          "else{"\
+            "console.log('keks');"\
           "}"\
         "};"\
-        "xhttp.open(\"GET\", \"/msrmnt\", true);"\
-        "xhttp.send();"\
       "}"\
-      
     "</script>"\
-    /**/
     "</body>"\
   "</html>";
+
+
+
+void readyBlinking() {
+  digitalWrite(LED_BUILTIN, LOW);   delay(250);
+  digitalWrite(LED_BUILTIN, HIGH);  delay(250);
+  digitalWrite(LED_BUILTIN, LOW);   delay(250);
+  digitalWrite(LED_BUILTIN, HIGH);  delay(250);
+  digitalWrite(LED_BUILTIN, LOW);   delay(250);
+  digitalWrite(LED_BUILTIN, HIGH);  delay(250);
+}
+
+
+
+void StopMeasurement() {
+  SensorLive = false;
+  Finish = micros();
+  WorkTime = (Finish - Start)/1000.0;
+  ax = ay = az = 0;
+  Serial.println(F("Stop measure"));
+}
+
 
 
 void SensorMeasurements() {
   const auto mesStart = micros();
   accelgyro.getAcceleration(&ax, &ay, &az);
-  database[measurement_pos++] = {ax, ay, az};
-//  MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az) +';';
-//  const auto mesTime = micros() - mesStart;
-//  MeanMeasureTime = (MeanMeasureTime + mesTime)/2;
-  
-//  currentFile.println(time(nullptr));
-//  currentFile.print(ax); currentFile.print(',');
-//  currentFile.print(ay); currentFile.print(',');
-//  currentFile.print(az); currentFile.println(';');
-  
+  MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az) +';';
+  const auto mesTime = (micros() - mesStart);
+  MeanMeasureTime = (MeanMeasureTime + mesTime)/2;
   ++iterations;
-  if(measurement_pos > DATA_SIZE_MAX) {
-//  if(MeasurementsForResponse.size() > 1024) {
-    SensorLive = false;
-    Finish = micros();
-    WorkTime = Finish - Start;
-    ax = ay = az = 0;
-    Serial.println(F("Stop measure"));
-  }
+  
+//  if(MeasurementsForResponse.length() > MAX_SINGLE_RESPONSE_SIZE) {
+//    StopMeasurement();
+//  }
 }
+
 
 
 void ParseConsole() {
@@ -146,46 +180,32 @@ void ParseConsole() {
     }
     else if (last_console_text == "stats") {
       if (SensorLive) {
-        WorkTime = micros()-Start;
+        WorkTime = (micros()-Start)/1000.0;
       }
       Serial.print(F("WorkTime: "));
-      Serial.print(WorkTime/1000.0);
+      Serial.print(WorkTime);
       Serial.println(F("ms;"));
       Serial.print(F("V = "));
-      Serial.print(1000.0*iterations/WorkTime);
+      Serial.print(1.0*iterations/WorkTime);
       Serial.println(F("kHz;"));
       
       Serial.print(F("ResponseTime: "));
       Serial.print(MeanResponseTime);
-      Serial.println(F("ms;"));
-
-      /*
-      FSInfo filesystem_info;
-      LittleFS.info(filesystem_info);
-      Serial.println(filesystem_info.totalBytes);
-      Serial.println(filesystem_info.usedBytes);
-      */
+      Serial.println(F("µs;"));
+      
+      Serial.print(F("MeasureTime: "));
+      Serial.print(MeanMeasureTime);
+      Serial.println(F("µs;"));
     }
     else if (last_console_text == "clear") {
       Start = micros();
       Finish = 0;
       WorkTime = 0;
       iterations = 0;
-      MeanResponseTime = 1;
       Serial.println(F("Cleared"));
     }
     Serial.flush();
   }
-}
-
-
-void readyBlinking() {
-  digitalWrite(LED_BUILTIN, LOW);   delay(250);
-  digitalWrite(LED_BUILTIN, HIGH);  delay(250);
-  digitalWrite(LED_BUILTIN, LOW);   delay(250);
-  digitalWrite(LED_BUILTIN, HIGH);  delay(250);
-  digitalWrite(LED_BUILTIN, LOW);   delay(250);
-  digitalWrite(LED_BUILTIN, HIGH);  delay(250);
 }
 
 
@@ -232,22 +252,6 @@ void setup() {
   Serial.println(F("WiFi connected"));
   
   
-  Serial.print(F("Trying to filesystem: "));
-  if(LittleFS.begin()) {
-    Serial.println(F("success!"));
-    
-    const String filename = "/SensorData.txt";
-    if(LittleFS.exists(filename)) {
-      LittleFS.remove(filename);
-    }
-  }
-  else {
-    Serial.println(F("fail."));
-    return;
-  }
-  Serial.println();
-  
-  
   Serial.println(F("Syncing time"));
   configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov"); //ua.pool.ntp.org
   while (!time(nullptr)) {
@@ -258,58 +262,6 @@ void setup() {
   
   server.on("/", [](){
     server.send(200, "text/html", preparedHtmlPage);
-  });
-  
-  /**/
-  server.on("/req/get", HTTP_GET, [](){
-    String msg = "Number of args received:";
-    msg += server.args();      // получить количество параметров
-    msg += "\n";               // переход на новую строку
-    
-    for (int i = 0; i < server.args(); i++) {
-      msg += "Arg #" + (String)i + " –> "; // добавить текущее значение счетчика
-      msg += server.argName(i) + ": ";      // получить имя параметра
-      msg += server.arg(i) + "\n";          // получить значение параметра
-    }
-    
-    Serial.print(msg);
-
-    if (server.hasArg("Download")) {
-      const String filename = server.arg(F("Download"));
-      Serial.println(F("Downloading"));
-      
-      File download = LittleFS.open(filename, "r");
-      if (download) {
-        server.sendHeader(F("Content-Type"), F("text/text"));
-        String str = "attachment; filename=";
-        str += filename;
-        server.sendHeader(F("Content-Disposition"), str);
-        server.sendHeader(F("Connection"), F("close"));
-        server.streamFile(download, F("application/octet-stream"));
-        download.close();
-      }
-      else {
-        server.send(501);
-      }
-    }
-    else if (server.arg(F("Led")) == F("OFF")) {
-      Serial.println(F("Led go OFF but on GET"));
-      led_state = HIGH;
-      digitalWrite(LED_BUILTIN, led_state);
-    }
-    else if (server.hasArg(F("Measurement"))) {
-      Serial.println(F("GET measurement"));
-//      server.sendHeader(F("Content-Type"), F("text/plain"));
-//      server.sendHeader(F("Connection"), F("Close"));
-//      server.sendHeader("Connection", "Keep-Alive");
-//      String payload = "{ax:" + String(ax) +", ay:" + String(ay) +", az:" + String(az) + "}";
-//      String payload = "data: " + String(rand()%200);
-    }
-    
-    Serial.flush();
-    Serial.println();
-    
-    server.send(204);
   });
   
   server.on("/req/post", HTTP_POST, [](){
@@ -340,17 +292,10 @@ void setup() {
       
       Start = micros();
       SensorLive = true;
-//      currentFile = LittleFS.open(F("/SensorData.txt"), "a");
     }
     else if (server.arg("Msrmnt") == "OFF") {
       Serial.println(F("Msrmnt stop"));
-      
-//      currentFile.close();
-      SensorLive = false;
-      Finish = micros();
-      ax = ay = az = 0;
-      
-      WorkTime = Finish - Start;
+      StopMeasurement();
     }
     
     Serial.flush();
@@ -358,21 +303,22 @@ void setup() {
     
     server.send(204);
   });
-
-  MeasurementsForResponse.reserve(1024);
+  
+  
+  MeasurementsForResponse.reserve(MAX_RESPONSE_SIZE);
   server.on("/msrmnt", HTTP_GET, [](){
+//    Serial.print(F("Packet size: "));
+//    Serial.println(MeasurementsForResponse.length());
+    
     auto start_sending_time = micros();
 //    Serial.println(server.readStringUntil("\n\r"));
-    MeasurementsForResponse = "";
-    for (uint8_t i=0; i<measurement_pos; i++) {
-      MeasurementsForResponse += String(database[i].ax) +',' + String(database[i].ay) +','+ String(database[i].az) +';';
-    }
-    measurement_pos = 0;
-    
     server.send(200, "text/plain", MeasurementsForResponse);  // arraybuffer/blob text/plain
-    auto ResponseTime = (micros()-start_sending_time)/1000.0;
-    Serial.print(F("GET measurement: "));
-    Serial.println(ResponseTime);
+    MeasurementsForResponse = "";
+    auto ResponseTime = (micros()-start_sending_time);
+    
+//    Serial.print(F("GET measurement: "));
+//    Serial.println(ResponseTime);
+    
     MeanResponseTime = (MeanResponseTime+ResponseTime)/2.0;
   });
   server.enableCORS(true);
@@ -388,7 +334,7 @@ void setup() {
   Serial.print(WiFi.localIP());
   Serial.println('/');
   Serial.println(F("~~~~~~~~"));
-
+  
 //  timer = timerBegin(0, 2, true); // use a prescaler of 2
 //  timerAttachInterrupt(timer, &onTimer, true);
 //  timerAlarmWrite(timer, 5000, true);
@@ -408,12 +354,5 @@ void loop() {
   
   if (SensorLive) {
     SensorMeasurements();
-    
-//    if (iteration%SEND_DATA_EVERY == 0) {
-//      sendMeasurements();
-//    }
-//    if (iteration == DATA_SIZE_MAX) {
-//      iteration = 0;
-//    }
   }
 }
