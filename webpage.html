@@ -26,9 +26,14 @@
           <p>Measurements Control Panel</p>
           <p>
             <form method="post" action="http://192.168.0.101:80/req/post">
-              <button name="Msrmnt" value="ON">Start Measurements</button>
-              <button name="Msrmnt" value="OFF">Stop Measurements</button>
+              <button name="Msrmnt" value="ON" onclick="online()">Start Measurements</button>
+              <button name="Msrmnt" value="OFF" onclick="offline()">Stop Measurements</button>
             </form>
+			<script>
+				var live = false;
+				function online(){live = true;}
+				function offline(){live = false; forceSaveDataFile();}
+			</script>
           </p>
           <p>
             <form method="get" action="http://192.168.0.101:80/req/get">
@@ -36,12 +41,60 @@
             </form>
           </p>
         </div>
-    
+    <div><p>
+		<button onclick="writeToFile()">Test write</button>
+		<button onclick="closeNsave()">Test close</button>
+		<script>
+			let dirHandle;
+			let fileHandle;
+			let fileWritable;
+			
+			async function writeToFile() {
+				try {
+					if (!dirHandle) {
+						const mainDirHandle = await window.showDirectoryPicker({
+							startIn: 'downloads',
+						});
+						dirHandle = await mainDirHandle.getDirectoryHandle("Measurements", {create: true});
+						fileHandle = await dirHandle.getFileHandle("test.txt", {create: true});
+					}
+					if (!fileWritable) {
+						fileWritable = await fileHandle.createWritable({keepExistingData:true});
+					}
+					
+					const size = (await fileHandle.getFile()).size;
+					await fileWritable.write({
+						type: "write",
+						data: "keks",
+						position: size 
+					});
+				}
+				catch (err) {
+					console.error(err.name, err.message);
+					alert("fu");
+				}
+			}
+			async function closeNsave() {
+				if (fileWritable) {
+					await fileWritable.close();
+					fileWritable = null;
+				}
+			}
+		</script>
+	</p></div>
+	
     <script>
 		google.charts.load('current', {packages: ['corechart', 'line']});
 		
 		var queue  = [];
-		setInterval(function() {getMeasurement(); drawAxisTickColors();}, 100);
+		
+		setInterval(function() {
+			if(!live) {
+				return;
+			}
+			getMeasurement(); 
+			drawAxisTickColors();
+		}, 1000);
 		
 		function drawAxisTickColors() {
 			var data = new google.visualization.DataTable();
@@ -82,17 +135,15 @@
 					//var parser = new DOMParser();
 					//var doc1 = parser.parseFromString(xmlString, "text/xml");
 					
-					var arr = this.response.split(',').map(Number);
-					//console.log(arr);
-					
-					queue.push(arr);
-					if(queue.length > 100) {
-						queue.shift();
+					var arr = this.response.split(';');
+					for(const line of arr) {
+						if(!line) continue;
+						queue.push(line.split(',').map(Number));
 					}
 					
-					document.getElementById("ax").innerHTML = "ax: "+arr[0]+";";
-					document.getElementById("ay").innerHTML = "ay: "+arr[1]+";";
-					document.getElementById("az").innerHTML = "az: "+arr[2]+";";
+					while(queue.length > 1000) {
+						queue.shift();
+					}
 				}
 				else {
 					console.log('keks');
