@@ -9,9 +9,6 @@
 #include <String>
 
 #define LED_BUILTIN 2
-#define SEND_DATA_EVERY 100
-#define DATA_SIZE_MAX 400
-
 
 const char* ssid = "yourNetwork";
 const char* password = "secretPassword";
@@ -26,11 +23,21 @@ int16_t ax, ay, az;
 
 #define MAX_RESPONSE_SIZE 65536 //1048576 65536
 #define MAX_SINGLE_RESPONSE_SIZE 65472 //MAX_RESPONSE_SIZE-64
-String MeasurementsForResponse;
+#define CSV_HEADER "" //"time,ax,ay,az"
+String MeasurementsForResponse = CSV_HEADER;
+String MeasurementsForResponse2 = CSV_HEADER;
 
-unsigned long Start, Finish, WorkTime = 0;
-unsigned long MeanResponseTime = 1, MeanMeasureTime = 1;
-size_t iterations = 0;
+bool useFirstResponseString = true;
+
+
+unsigned long MeasureStartTime, MeasureFinTime;
+unsigned long SumWorkTimeMs = 0, SumWriteMeasureTime = 0, SumGetMeasureTime = 0, SumResponseTime = 0;
+size_t measure_iterations = 0, response_iterations = 0;
+size_t SumResponseSize = 0;
+
+
+//#define TIMER_INTERVAL_MS 1
+//ESP8266Timer ITimer;
 
 
 const String preparedHtmlPage = 
@@ -139,23 +146,39 @@ void readyBlinking() {
 
 
 
+void StartMeasurement() {
+  SensorLive = true;
+  MeasureStartTime = micros();
+  Serial.println(F("Start measure"));
+}
+
 void StopMeasurement() {
   SensorLive = false;
-  Finish = micros();
-  WorkTime = (Finish - Start)/1000.0;
+  MeasureFinTime = micros();
+  SumWorkTimeMs += (MeasureFinTime - MeasureStartTime)/1000.0;
   ax = ay = az = 0;
   Serial.println(F("Stop measure"));
 }
 
 
+const String toString(int16_t i) {
+  if(i < 0) {
+    return '-'+String(abs(i));
+  }
+  return String(abs(i));
+}
+
 
 void SensorMeasurements() {
   const auto mesStart = micros();
   accelgyro.getAcceleration(&ax, &ay, &az);
-  MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az) +';';
-  const auto mesTime = (micros() - mesStart);
-  MeanMeasureTime = (MeanMeasureTime + mesTime)/2;
-  ++iterations;
+  const auto mesGet = micros();
+  MeasurementsForResponse += String(ax) +','+ String(ay) +','+ String(az) +';'; //String(time(nullptr)) +','+
+  const auto mesFin = micros();
+  
+  SumGetMeasureTime += (mesGet - mesStart);
+  SumWriteMeasureTime += (mesFin - mesGet);
+  ++measure_iterations;
   
 //  if(MeasurementsForResponse.length() > MAX_SINGLE_RESPONSE_SIZE) {
 //    StopMeasurement();
@@ -179,29 +202,39 @@ void ParseConsole() {
       Serial.println();
     }
     else if (last_console_text == "stats") {
+      unsigned long WorkTime = SumWorkTimeMs;
       if (SensorLive) {
-        WorkTime = (micros()-Start)/1000.0;
+        WorkTime += (micros()-MeasureStartTime)/1000.0;
       }
       Serial.print(F("WorkTime: "));
       Serial.print(WorkTime);
       Serial.println(F("ms;"));
       Serial.print(F("V = "));
-      Serial.print(1.0*iterations/WorkTime);
+      Serial.print(1.0*measure_iterations/WorkTime);
       Serial.println(F("kHz;"));
       
-      Serial.print(F("ResponseTime: "));
-      Serial.print(MeanResponseTime);
+      Serial.print(F("GetMeasureTime: "));
+      Serial.print(SumGetMeasureTime/measure_iterations);
       Serial.println(F("µs;"));
       
-      Serial.print(F("MeasureTime: "));
-      Serial.print(MeanMeasureTime);
+      Serial.print(F("WriteMeasureTime: "));
+      Serial.print(SumWriteMeasureTime/measure_iterations);
       Serial.println(F("µs;"));
+      
+      Serial.print(F("ResponseTime: "));
+      Serial.print(SumResponseTime/response_iterations);
+      Serial.println(F("µs;"));
+      
+      Serial.print(F("ResponseSize: "));
+      Serial.print(SumResponseSize/response_iterations);
+      Serial.println(F("b;"));
+      Serial.println();
     }
     else if (last_console_text == "clear") {
-      Start = micros();
-      Finish = 0;
-      WorkTime = 0;
-      iterations = 0;
+      MeasureStartTime = MeasureFinTime = 0;
+      SumWorkTimeMs = SumResponseTime = SumGetMeasureTime = SumWriteMeasureTime = 0;
+      response_iterations = measure_iterations = 0;
+      SumResponseSize = 0;
       Serial.println(F("Cleared"));
     }
     Serial.flush();
@@ -289,9 +322,7 @@ void setup() {
     }
     else if (server.arg("Msrmnt") == "ON") {
       Serial.println(F("Msrmnt start"));
-      
-      Start = micros();
-      SensorLive = true;
+      StartMeasurement();
     }
     else if (server.arg("Msrmnt") == "OFF") {
       Serial.println(F("Msrmnt stop"));
@@ -307,19 +338,16 @@ void setup() {
   
   MeasurementsForResponse.reserve(MAX_RESPONSE_SIZE);
   server.on("/msrmnt", HTTP_GET, [](){
-//    Serial.print(F("Packet size: "));
-//    Serial.println(MeasurementsForResponse.length());
+    SumResponseSize += MeasurementsForResponse.length();
     
-    auto start_sending_time = micros();
-//    Serial.println(server.readStringUntil("\n\r"));
-    server.send(200, "text/plain", MeasurementsForResponse);  // arraybuffer/blob text/plain
-    MeasurementsForResponse = "";
-    auto ResponseTime = (micros()-start_sending_time);
+    auto SendingStartTime = micros();
+//    server.addHeader("Connection", "Keep-Alive");
+    server.send(200, "text/csv", MeasurementsForResponse);  // arraybuffer/blob text/plain
+    MeasurementsForResponse = CSV_HEADER;
+    auto SendingFinTime = micros();
     
-//    Serial.print(F("GET measurement: "));
-//    Serial.println(ResponseTime);
-    
-    MeanResponseTime = (MeanResponseTime+ResponseTime)/2.0;
+    SumResponseTime += SendingFinTime-SendingStartTime;
+    ++response_iterations;
   });
   server.enableCORS(true);
   
@@ -335,9 +363,21 @@ void setup() {
   Serial.println('/');
   Serial.println(F("~~~~~~~~"));
   
-//  timer = timerBegin(0, 2, true); // use a prescaler of 2
+//  timer1_attachInterrupt(TimerISR);
+//  timer1_enable(TIM_DIV16, TIM_EDGE, TIM_SINGLE); //3: TIM_LOOP
+//  timer1_write(5000);
+  
+//  Serial.println(ESP8266_TIMER_INTERRUPT_VERSION);
+//  if (ITimer.attachInterruptInterval(TIMER_INTERVAL_MS * 1000, TimerHandler)) {
+//    Serial.print(F("Starting  ITimer OK, millis() = ")); Serial.println(millis());
+//  }
+//  else {
+//    Serial.println(F("Can't set ITimer. Select another freq. or timer"));
+//  }
+  
+//  timer = timerBegin(0, 160000, true);
 //  timerAttachInterrupt(timer, &onTimer, true);
-//  timerAlarmWrite(timer, 5000, true);
+//  timerAlarmWrite(timer, 1000, true);
 //  timerAlarmEnable(timer);
 }
 
