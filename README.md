@@ -1,4 +1,4 @@
-# Project of master's dissertation on engineering Machining health device design using ESP-8266 and GY-87
+# Project of master's thesis on engineering Machining health device design using ESP-8266 and GY-87
 Compile and firmware using [``` ArduinoIDE ```](https://www.arduino.cc/en/software) v 1.8.15
 
 ### Used components:
