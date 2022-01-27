@@ -9,7 +9,7 @@ Compile and firmware using [``` ArduinoIDE ```](https://www.arduino.cc/en/softwa
 - [``` MPU6050 ```](https://github.com/ElectronicCats/mpu6050) v.0.5.0
 - [``` arduinoFFT ```](https://github.com/kosme/arduinoFFT) v.1.5.6
 - Libraries from [``` ESP8266 Arduino Core ```](https://github.com/esp8266/Arduino) v3.0.2:
-  - [``` ESP8266WebServer ```](https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WebServer)
+  - [``` ESP8266WiFi ```](https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WiFi)
   - [``` ESP8266WebServer ```](https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WebServer)
 
 ### Used for web page part
